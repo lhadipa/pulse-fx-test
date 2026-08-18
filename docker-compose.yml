@@ -1,0 +1,140 @@
+# Pulse FX - ambiente completo.
+#
+# Objetivo de projeto: `docker compose up --build` precisa entregar um
+# dashboard com dados reais, sem nenhum passo manual alem de preencher o
+# arquivo de variaveis de ambiente.
+#
+# A ordem de subida e garantida por healthcheck, nao por sleep:
+#   postgres (healthy) -> migrate (completed) -> api + worker -> web
+
+name: pulse-fx
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pulse-fx-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulse}
+      POSTGRES_DB: ${POSTGRES_DB:-pulse_fx}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-pulse} -d ${POSTGRES_DB:-pulse_fx}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # Banco isolado para os testes de integracao. Nao sobe por padrao:
+  #   docker compose up -d postgres-test
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: pulse-fx-postgres-test
+    profiles: ['test']
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulse_fx_test
+    ports:
+      - '5433:5432'
+    # tmpfs: banco de teste nao precisa sobreviver a um restart, e ficar em
+    # memoria deixa a suite sensivelmente mais rapida.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pulse -d pulse_fx_test']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # Servico efemero: aplica as migrations versionadas e sai. api e worker
+  # esperam por ele terminar com sucesso.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: pulse-fx-migrate
+    command: ['node', 'dist/apps/api/src/infrastructure/db/migrate.js']
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse_fx}
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: pulse-fx-api
+    command: ['node', 'dist/apps/api/src/server.js']
+    environment:
+      NODE_ENV: production
+      PORT: 3333
+      HOST: 0.0.0.0
+      TZ: UTC
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse_fx}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-pulse-fx-dev-admin-token}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+    ports:
+      - '${API_PORT:-3333}:3333'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3333/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # Mesma imagem da api, entrypoint diferente. E o UNICO servico que fala com
+  # BCB e FRED: se ele cair, o dashboard continua servindo o ultimo dado
+  # persistido.
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: pulse-fx-worker
+    command: ['node', 'dist/apps/api/src/worker.js']
+    environment:
+      NODE_ENV: production
+      TZ: UTC
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse_fx}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      SYNC_TTL_MINUTES: ${SYNC_TTL_MINUTES:-30}
+      SYNC_ON_BOOTSTRAP: ${SYNC_ON_BOOTSTRAP:-true}
+      SYNC_REVISION_WINDOW_DAYS: ${SYNC_REVISION_WINDOW_DAYS:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3333}
+    container_name: pulse-fx-web
+    ports:
+      - '${WEB_PORT:-5173}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
