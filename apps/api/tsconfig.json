@@ -2,8 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "..",
-    "types": ["node"]
+    "rootDir": "../..",
+    "types": ["node"],
+    "paths": {
+      "@pulse-fx/shared": ["../../packages/shared/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts", "../../packages/shared/src/**/*.ts"]
 }

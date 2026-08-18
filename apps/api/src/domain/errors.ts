@@ -38,7 +38,7 @@ export class ProviderError extends DomainError {
   constructor(
     readonly provider: string,
     message: string,
-    readonly cause?: unknown,
+    override readonly cause?: unknown,
   ) {
     super(`[${provider}] ${message}`, 'PROVIDER_ERROR', 502);
   }
