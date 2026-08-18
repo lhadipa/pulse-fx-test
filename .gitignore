@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Secrets - nunca versionar. Apenas o arquivo de exemplo entra no git.
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.vscode/
+.idea/
+*.tsbuildinfo
