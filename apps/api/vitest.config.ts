@@ -1,12 +1,13 @@
 import { defineConfig } from 'vitest/config';
 
+/**
+ * Configuracao padrao: testes que NAO precisam de infraestrutura.
+ * Rodam em qualquer maquina, sem Docker e sem rede.
+ */
 export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
-    globals: false,
-    // Testes de integracao tocam um Postgres real; rodam em serie para nao
-    // disputar o mesmo schema.
-    poolOptions: { threads: { singleThread: true } },
+    exclude: ['**/node_modules/**', '**/*.integration.test.ts'],
   },
 });

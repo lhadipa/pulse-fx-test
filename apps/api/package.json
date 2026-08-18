@@ -8,12 +8,12 @@
     "dev": "tsx watch src/server.ts",
     "dev:worker": "tsx watch src/worker.ts",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/api/src/server.js",
-    "start:worker": "node dist/api/src/worker.js",
+    "start": "node dist/apps/api/src/server.js",
+    "start:worker": "node dist/apps/api/src/worker.js",
     "db:migrate": "tsx src/infrastructure/db/migrate.ts",
     "test": "vitest run",
-    "test:unit": "vitest run --exclude '**/*.integration.test.ts'",
-    "test:integration": "vitest run **/*.integration.test.ts",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
