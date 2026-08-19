@@ -29,44 +29,77 @@ e cliente web.
 
 ## Subir o ambiente
 
-**Pré-requisitos:** Docker e Docker Compose. Nada mais — Node, PostgreSQL e as dependências
-ficam todos dentro dos containers.
+**Pré-requisito único:** Docker Desktop (ou Docker Engine) rodando. Node, PostgreSQL e todas
+as dependências ficam dentro dos containers — nada é instalado na sua máquina.
+
+### Passo 1 — gere sua chave do FRED (2 minutos, gratuita)
+
+As 4 séries americanas vêm do **FRED** (Federal Reserve Economic Data), que exige uma chave de
+API **pessoal**. Ela não é versionada neste repositório: cada pessoa gera a sua.
+
+1. Crie a conta gratuita e solicite a chave em
+   **https://fredaccount.stlouisfed.org/apikeys**
+2. A liberação é imediata — uma string de 32 caracteres hexadecimais.
+
+> Sem chave o ambiente **sobe e funciona** com as 5 séries do BCB. Apenas os 4 cards
+> americanos ficam sem dado, e o motivo aparece no log do worker. Dá para adicionar a chave
+> depois, sem recomeçar.
+
+### Passo 2 — configure e suba
 
 ```bash
-# 1. Crie o arquivo de variáveis a partir do modelo
-cp .env.example .env
-
-# 2. Preencha FRED_API_KEY no .env
-#    Registro gratuito e imediato: https://fredaccount.stlouisfed.org/apikeys
-
-# 3. Suba tudo
-docker compose up --build
+cp .env.example .env          # cria o arquivo de variáveis a partir do modelo
+# abra o .env e cole sua chave em FRED_API_KEY=
+docker compose up --build     # sobe tudo
 ```
 
-Pronto. Abra **http://localhost:5173**.
+Espere a linha `pulse-fx-web ... Started` e abra **http://localhost:5173**.
 
-O que acontece nessa ordem, garantida por healthcheck (não por `sleep`):
+O primeiro build leva de 2 a 4 minutos, porque compila API e frontend. Nas próximas vezes,
+segundos.
+
+### O que acontece quando você sobe
+
+A ordem é garantida por **healthcheck**, não por `sleep`:
 
 ```
-postgres (healthy) → migrate (aplica migrations + seed) → api + worker → web
+postgres (healthy) → migrate (migrations + seed) → api + worker → web
 ```
 
-O worker faz o **backfill inicial** assim que sobe: 5 anos de séries diárias e 10 anos das
-mensais. As primeiras séries aparecem em segundos; o conjunto completo leva 1–2 minutos,
-limitado pela velocidade das APIs públicas. Enquanto isso a UI mostra estado de
-carregamento em vez de quebrar.
+O worker faz o **backfill inicial** assim que sobe: 5 anos das séries diárias e 10 anos das
+mensais. Os primeiros cards aparecem em segundos; o conjunto completo leva 1–2 minutos,
+limitado pela velocidade das APIs públicas. Enquanto isso a UI mostra estado de carregamento
+em vez de quebrar.
 
 | Serviço | URL |
 |---|---|
-| Web | http://localhost:5173 |
+| **Web** | **http://localhost:5173** |
 | API | http://localhost:3333 |
 | Documentação da API (OpenAPI) | http://localhost:3333/docs |
 | Health / readiness | http://localhost:3333/health · `/ready` |
 
-**Sem a `FRED_API_KEY`** o ambiente sobe e funciona normalmente com as 5 séries do BCB;
-apenas as 4 séries americanas ficam sem dado, e o motivo aparece no log do worker.
+### Comandos do dia a dia
 
-Para começar do zero: `docker compose down -v && docker compose up --build`.
+```bash
+docker compose logs -f worker     # acompanhar a sincronização
+docker compose ps                 # estado dos containers
+docker compose down               # parar tudo, mantendo os dados
+docker compose down -v            # parar e APAGAR o banco
+docker compose up --build         # subir de novo
+```
+
+**Adicionou a chave do FRED depois de já ter subido?** Rode `docker compose up -d worker`.
+Precisa ser `up`, e não `restart`: o `restart` reaproveita as variáveis antigas do container.
+Como `SYNC_ON_BOOTSTRAP=true`, o worker já busca as séries americanas ao subir.
+
+### Se algo der errado
+
+| Sintoma | Causa provável |
+|---|---|
+| `failed to connect to the docker API` | Docker Desktop não está rodando. |
+| `port is already allocated` | Algo já ocupa 5173, 3333 ou 5432. Ajuste `WEB_PORT`, `API_PORT` ou `POSTGRES_PORT`. |
+| Cards americanos vazios | `FRED_API_KEY` ausente ou inválida — confirme em `docker compose logs worker`. |
+| Página abre mas sem dado | O backfill ainda está rodando. Acompanhe com `docker compose logs -f worker`. |
 
 ---
 
@@ -76,7 +109,7 @@ Todas documentadas em [`.env.example`](.env.example). As que importam:
 
 | Variável | Padrão | Para que serve |
 |---|---|---|
-| `FRED_API_KEY` | *(vazio)* | **Única obrigatória.** Sem ela, apenas as séries do BCB sincronizam. |
+| `FRED_API_KEY` | *(vazio)* | **A única que você precisa preencher.** Gere a sua em [fredaccount.stlouisfed.org/apikeys](https://fredaccount.stlouisfed.org/apikeys). Sem ela, apenas as séries do BCB sincronizam. |
 | `ADMIN_TOKEN` | `pulse-fx-dev-admin-token` | Bearer token de `POST /api/admin/sync`. Trocar fora da máquina local. |
 | `SYNC_TTL_MINUTES` | `30` | Janela mínima entre duas sincronizações do mesmo indicador. |
 | `SYNC_ON_BOOTSTRAP` | `true` | Sincronizar assim que o worker sobe. |
@@ -84,7 +117,8 @@ Todas documentadas em [`.env.example`](.env.example). As que importam:
 | `VITE_API_URL` | `http://localhost:3333` | URL da API embutida no bundle **em tempo de build**. |
 | `POSTGRES_*`, `API_PORT`, `WEB_PORT` | ver arquivo | Credenciais e portas. |
 
-O `.env` está no `.gitignore`. Só o `.env.example` é versionado.
+Nenhuma chave é versionada: o arquivo de variáveis local está no `.gitignore`, e só o
+`.env.example` — com `FRED_API_KEY` vazia — entra no git.
 
 ---
 
@@ -313,7 +347,7 @@ curl -X POST http://localhost:3333/api/admin/sync \
 ## Testes e lint
 
 ```bash
-npm test          # 121 testes, 7 arquivos — sem Docker, sem rede
+npm test          # 122 testes, 7 arquivos — sem Docker, sem rede
 npm run lint      # ESLint, incluindo a regra de fronteira entre camadas
 npm run typecheck # tsc --noEmit em todos os workspaces
 ```
@@ -414,6 +448,12 @@ Descobertas consultando as APIs de verdade, e todas cobertas por teste:
 7. **O parser default do `node-postgres` converte `DATE` para `Date` no fuso local**, e
    `2026-01-01` viraria `2025-12-31` em UTC−3. Registramos um parser que devolve a string ISO
    crua. Coberto por teste de integração.
+
+8. **A Olinda devolve VÁRIOS boletins da PTAX no mesmo dia** — os intermediários e o de
+   fechamento, cada um com seu `dataHoraCotacao`. Truncados para o dia de referência, todos
+   colapsam na mesma chave `(indicator_id, ref_date)`, e o Postgres recusa o lote inteiro com
+   *"ON CONFLICT DO UPDATE command cannot affect row a second time"*. O provider deduplica por
+   data e fica com o boletim de maior horário, que é o de fechamento — a PTAX oficial.
 
 ---
 
