@@ -51,6 +51,14 @@ COPY --from=builder /app/apps/api/dist ./dist
 COPY --from=builder /app/apps/api/migrations ./dist/apps/api/migrations
 COPY apps/api/package.json ./package.json
 
+# O tsc nao reescreve o especificador `@pulse-fx/shared` no JS emitido, e o
+# symlink de workspace criado pelo npm aponta para `packages/shared`, que nao
+# existe nesta imagem - so o JS compilado veio do builder. Reapontamos o pacote
+# para a saida compilada em dist/packages/shared.
+RUN rm -rf node_modules/@pulse-fx/shared \
+    && printf '%s' '{"name":"@pulse-fx/shared","version":"1.0.0","type":"module","main":"./src/index.js","exports":{".":"./src/index.js"}}' > dist/packages/shared/package.json \
+    && ln -s /app/dist/packages/shared node_modules/@pulse-fx/shared
+
 # Nao rodar como root. A imagem node ja traz o usuario `node`.
 USER node
 
