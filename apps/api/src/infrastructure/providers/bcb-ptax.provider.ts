@@ -64,7 +64,12 @@ export class BcbPtaxProvider implements SeriesProvider {
       throw new ProviderError('BCB_PTAX', 'resposta inesperada: campo "value" ausente ou invalido');
     }
 
-    const observations: Observation[] = [];
+    // A Olinda devolve VARIOS boletins para o mesmo dia (os intermediarios e o
+    // de fechamento). Truncar `dataHoraCotacao` para o dia colapsa todos no
+    // mesmo refDate, e o upsert em lote quebraria com "ON CONFLICT DO UPDATE
+    // command cannot affect row a second time". Ficamos com o boletim de maior
+    // dataHoraCotacao do dia, que e o de fechamento - a PTAX oficial.
+    const byRefDate = new Map<string, { stamp: string; obs: Observation }>();
 
     for (const row of payload.value) {
       if (!row?.dataHoraCotacao) continue;
@@ -72,9 +77,16 @@ export class BcbPtaxProvider implements SeriesProvider {
       const value = parseDecimalOrNull(row.cotacaoVenda);
       if (!value) continue;
 
-      observations.push({ refDate: parsePtaxDateTime(row.dataHoraCotacao), value });
+      const refDate = parsePtaxDateTime(row.dataHoraCotacao);
+      const stamp = row.dataHoraCotacao.trim();
+      const current = byRefDate.get(refDate);
+
+      // O formato "yyyy-MM-dd HH:mm:ss.ffffff" ordena corretamente como string.
+      if (!current || stamp > current.stamp) {
+        byRefDate.set(refDate, { stamp, obs: { refDate, value } });
+      }
     }
 
-    return observations;
+    return [...byRefDate.values()].map((entry) => entry.obs);
   }
 }

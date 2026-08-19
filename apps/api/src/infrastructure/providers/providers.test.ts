@@ -209,6 +209,42 @@ describe('BcbPtaxProvider', () => {
     expect(result[1]!.refDate).toBe('2026-08-12');
   });
 
+  it('colapsa os varios boletins do dia no de fechamento', async () => {
+    // A Olinda devolve os boletins intermediarios junto com o de fechamento.
+    // Sem deduplicacao, os tres virariam a mesma chave (indicator_id, ref_date)
+    // dentro do mesmo INSERT e o Postgres recusaria o ON CONFLICT.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        value: [
+          {
+            cotacaoCompra: 5.09,
+            cotacaoVenda: 5.0905,
+            dataHoraCotacao: '2026-08-10 10:08:15.123000',
+          },
+          {
+            cotacaoCompra: 5.0935,
+            cotacaoVenda: 5.094,
+            dataHoraCotacao: '2026-08-10 11:07:41.884000',
+          },
+          {
+            cotacaoCompra: 5.0957,
+            cotacaoVenda: 5.0963,
+            dataHoraCotacao: '2026-08-10 13:10:22.642754',
+          },
+        ],
+      }),
+    );
+    const provider = new BcbPtaxProvider(
+      new HttpClient('BCB_PTAX', { timeoutMs: 100, maxRetries: 0, sleep: noSleep, fetchImpl }),
+    );
+
+    const result = await provider.fetchObservations(indicator, '2026-08-10', '2026-08-10');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.refDate).toBe('2026-08-10');
+    expect(result[0]!.value.toString()).toBe('5.0963');
+  });
+
   it('devolve vazio em fim de semana, quando nao ha boletim', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ value: [] }));
     const provider = new BcbPtaxProvider(
