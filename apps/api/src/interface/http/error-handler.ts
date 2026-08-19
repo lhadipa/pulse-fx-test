@@ -52,6 +52,22 @@ export function registerErrorHandler(app: FastifyInstance): void {
       });
     }
 
+    // Erros do proprio Fastify (corpo malformado, content-type invalido,
+    // payload grande demais) ja trazem o status correto. Devolver 500 neles
+    // culpa o servidor por um erro do cliente e esconde a causa de quem esta
+    // depurando o frontend.
+    const framework = error as { statusCode?: number; code?: string; message?: string };
+    const status = framework.statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      request.log.info({ err: framework.message, code: framework.code }, 'requisicao recusada');
+      return reply.status(status).send({
+        error: {
+          code: framework.code ?? 'BAD_REQUEST',
+          message: framework.message ?? 'Requisicao invalida.',
+        },
+      });
+    }
+
     request.log.error({ err: error }, 'erro nao tratado');
     return reply.status(500).send({
       error: { code: 'INTERNAL_ERROR', message: 'Erro interno inesperado.' },

@@ -41,7 +41,10 @@ async function request<T>(
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      // Content-Type SO quando ha corpo. PUT/DELETE de favorito nao enviam
+      // nenhum, e anunciar `application/json` sem body faz o Fastify recusar a
+      // requisicao com FST_ERR_CTP_EMPTY_JSON_BODY.
+      ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       [CLIENT_ID_HEADER]: getClientId(),
       ...init.headers,
     },
