@@ -17,6 +17,7 @@ e cliente web.
 - [Indicadores e por que cada um](#indicadores-e-por-que-cada-um)
 - [Regra de variação percentual](#regra-de-variação-percentual)
 - [Janelas de histórico](#janelas-de-histórico)
+- [Como o worker funciona](#como-o-worker-funciona)
 - [Política de sincronização](#política-de-sincronização)
 - [API](#api)
 - [Testes e lint](#testes-e-lint)
@@ -255,6 +256,103 @@ série mensal são três pontos — um gráfico inútil.
 |---|---|---|---|
 | Diária | **90 dias** | 30d · 90d · 1 ano · 5 anos | 5 anos |
 | Mensal | **5 anos** | 1 ano · 5 anos · tudo | 10 anos |
+
+---
+
+## Como o worker funciona
+
+O worker é o **único processo que fala com BCB e FRED**. Ele roda no mesmo container image da
+API, com outro entrypoint ([`worker.ts`](apps/api/src/worker.ts) em vez de `server.ts`), e o
+Compose sobe os dois lado a lado. A API nunca sai do Postgres.
+
+### Ciclo de vida
+
+```
+1. loadConfig()          lê e valida as variáveis de ambiente (falha rápido se faltar algo)
+2. waitForDatabase()     espera o Postgres aceitar conexão
+3. runMigrations()       aplica o que faltar (no-op se o serviço `migrate` já rodou)
+4. bootstrap             se SYNC_ON_BOOTSTRAP=true, sincroniza tudo IMEDIATAMENTE, com force
+5. cron.schedule()       registra os dois agendamentos e fica vivo
+6. SIGTERM / SIGINT      fecha o pool de conexões e sai com código 0
+```
+
+O passo 3 não é redundante com o serviço `migrate` do Compose: ele permite rodar o worker
+sozinho, fora do Compose, sem preparar o banco antes. Como o migrator usa **advisory lock** e
+registra o que já aplicou, subir api e worker ao mesmo tempo é seguro — o segundo espera o
+lock e encontra tudo pronto.
+
+O **bootstrap usa `force: true`** de propósito: um ambiente recém-criado precisa de dado na
+tela, e o TTL de uma execução anterior não pode impedir o primeiro backfill.
+
+### O que acontece em cada ciclo
+
+Um ciclo percorre os indicadores **ativos** (`indicators.active = TRUE`), **um de cada vez**.
+Para cada um:
+
+```
+┌─ TTL ──────────── houve sync bem-sucedida há menos de SYNC_TTL_MINUTES?
+│                   sim → registra `skipped_ttl` e NÃO chama a fonte. Fim.
+│
+├─ LOCK ─────────── try_advisory_lock(indicator_id)
+│                   não obteve → outra instância já está nessa série. Fim, sem erro.
+│
+├─ JANELA ───────── série vazia   → hoje − backfill_years  (5 ou 10 anos)
+│                   série povoada → MAX(ref_date) − SYNC_REVISION_WINDOW_DAYS
+│
+├─ FETCH ────────── provider da fonte (BCB_SGS, BCB_PTAX ou FRED)
+│                   timeout 10s · 3 retries com backoff exponencial + jitter
+│                   retry SÓ em 5xx, 408, 429, rede e timeout — nunca em 4xx
+│
+├─ UPSERT ───────── INSERT ... ON CONFLICT (indicator_id, ref_date) DO UPDATE
+│                   WHERE value IS DISTINCT FROM EXCLUDED.value
+│
+└─ AUDITORIA ───── uma linha em `sync_runs`: success | failed | skipped_ttl
+```
+
+**Falha em uma série não interrompe as outras.** O erro vira linha em `sync_runs`, é logado, e
+o loop segue para o próximo indicador. Foi assim que as 4 séries do FRED falharam sozinhas
+enquanto as 5 do BCB sincronizaram normalmente, num ambiente sem chave.
+
+**Um ciclo inteiro nunca derruba o worker**: `runSync` captura qualquer exceção que escape,
+registra e mantém o processo vivo para o próximo agendamento.
+
+### Por que em série, e não em paralelo
+
+As APIs públicas do BCB são lentas e não têm SLA publicado. Disparar nove requisições
+simultâneas contra elas seria exatamente o "acesso descontrolado" que o briefing pede para
+evitar. O custo é o backfill inicial levar 1–2 minutos em vez de 20 segundos — uma vez só, na
+primeira subida.
+
+### Os dois agendamentos
+
+| Cron | Expressão (UTC) | Por quê |
+|---|---|---|
+| Diário | `*/30 12-23 * * 1-5` | A PTAX sai por volta das 13h BRT. Varrer de 30 em 30 minutos só em dia útil, a partir do meio-dia UTC, cobre a publicação sem bater na fonte de madrugada nem no fim de semana. |
+| Mensal | `0 9 * * *` | IPCA, IGP-M, Fed Funds e CPI saem em dias imprevisíveis do mês. Uma checagem diária barata (janela de revisão, poucos registros) é mais simples e confiável que tentar adivinhar a data de divulgação. |
+
+Os dois disparam o **mesmo** caso de uso, que decide por indicador o que fazer. O TTL é o que
+torna a varredura frequente barata: fora do horário de publicação, quase toda execução termina
+em `skipped_ttl` sem tocar na rede.
+
+### Acompanhando e disparando manualmente
+
+```bash
+docker compose logs -f worker      # log estruturado, uma linha JSON por evento
+```
+
+```jsonc
+{"level":"info","msg":"sync concluida","code":"usd-brl-ptax",
+ "from":"2021-08-18","to":"2026-08-18","fetched":1256,"rowsUpserted":1256}
+{"level":"info","msg":"ciclo de sincronizacao concluido",
+ "trigger":"bootstrap","summary":{"success":9}}
+```
+
+`rowsUpserted: 0` com `fetched > 0` **não é erro**: significa que a fonte devolveu os mesmos
+valores que já estavam no banco e o `WHERE ... IS DISTINCT FROM` evitou a escrita.
+
+Para forçar uma sincronização sem esperar o cron, existe o terceiro gatilho (`admin`), via
+`POST /api/admin/sync` — o **único bypass do TTL**, e por isso atrás de um bearer token. O
+comando está na [seção da API](#api).
 
 ---
 
